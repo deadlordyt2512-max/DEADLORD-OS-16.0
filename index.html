@@ -87,6 +87,21 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;background:rep
     <input id="wbc" maxlength="32" placeholder="Nombre de usuario de WBC" autocomplete="off" autocapitalize="off" spellcheck="false">
     <button class="btn" id="reg">[ REGISTRAR ]</button>
     <div class="err" id="gerr"></div>
+    <div id="newkey" class="hide" style="border:1px solid var(--b2);border-radius:8px;padding:12px;margin-top:12px">
+      <h2>ACCESS KEY // GUARDA ESTA CLAVE</h2>
+      <p class="dim">Se muestra ahora. Cópiala y guárdala en un lugar seguro. La necesitarás para volver a entrar.</p>
+      <input id="keyout" readonly aria-label="Tu clave de acceso">
+      <button class="btn" id="copykey" type="button">[ COPIAR CLAVE ]</button>
+      <button class="btn" id="continuekey" type="button">[ YA LA GUARDÉ · CONTINUAR ]</button>
+    </div>
+    <div style="border-top:1px solid var(--line);margin-top:18px;padding-top:14px">
+      <h2>RETURNING USER // INICIAR SESIÓN</h2>
+      <p class="dim">¿Ya tienes una clave? Escribe el mismo nombre WBC y tu clave de acceso.</p>
+      <input id="loginwbc" maxlength="32" placeholder="Nombre de usuario de WBC" autocomplete="username" autocapitalize="off" spellcheck="false">
+      <input id="loginkey" type="password" placeholder="Clave de acceso" autocomplete="current-password">
+      <button class="btn" id="login">[ INICIAR SESIÓN ]</button>
+      <div class="err" id="lerr"></div>
+    </div>
     <button class="btn" id="skip" style="border-color:var(--line);color:var(--dim)">Ver el sitio sin registrarme</button>
   </div>
 </div>
@@ -175,6 +190,8 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;background:rep
       <div class="card"><h2>REGISTROS</h2><div id="al"></div>
         <button class="btn" id="ex">COPIA DE SEGURIDAD (JSON)</button>
         <button class="btn" id="exc">EXPORTAR LISTA (CSV)</button>
+        <button class="btn" id="clear-users" style="border-color:var(--r);color:var(--r)">[ REINICIAR REGISTROS WBC ]</button>
+        <p class="dim">Solo elimina participantes y sus claves. No modifica la cuenta ROOT, la configuración del evento ni los anuncios. Requiere confirmación y descarga una copia de seguridad.</p>
         <label class="dim" style="display:block;margin-top:10px">Restaurar copia (solo añade los que faltan)</label><input id="rs" type="file" accept=".json">
       </div>
     </section>
@@ -248,15 +265,91 @@ function rList(){const q=$('q').value.trim().toLowerCase(),L=$('list');L.textCon
 $('q').oninput=rList;
 function rEv(){$('msg').textContent=CFG.message||'';const w=CFG.event_at?new Date(CFG.event_at):null;$('when').textContent=w&&!isNaN(w)?w.toLocaleString('es',{dateStyle:'full',timeStyle:'short'}):'';const N=$('news');N.textContent='';if(!NEWS.length)N.textContent='Sin anuncios por ahora.';NEWS.forEach(x=>{const d=document.createElement('div');d.className='li';d.textContent=x.text;N.appendChild(d);});if(admin&&document.activeElement!==$('a-when')&&document.activeElement!==$('a-msg')){const p=n=>String(n).padStart(2,'0');$('a-when').value=w&&!isNaN(w)?w.getFullYear()+'-'+p(w.getMonth()+1)+'-'+p(w.getDate())+'T'+p(w.getHours())+':'+p(w.getMinutes()):'';$('a-msg').value=CFG.message||'';}}
 setInterval(()=>{const w=CFG.event_at?new Date(CFG.event_at).getTime():NaN;let t='FECHA POR ANUNCIAR';if(!isNaN(w)){const s=Math.floor((w-Date.now())/1000);if(s<=0)t='EL EVENTO HA COMENZADO';else t=Math.floor(s/86400)+'d '+Math.floor(s%86400/3600)+'h '+Math.floor(s%3600/60)+'m '+(s%60)+'s';}$('cd').textContent=t;},1000);
-async function register(){const err=t=>{$('gerr').textContent=t;$('reg').disabled=false;};const raw=$('wbc').value.trim().replace(/\s+/g,' ');if(!raw)return err('Escribe tu nombre de usuario de WBC.');if(raw.length<2)return err('El nombre es demasiado corto.');if(raw.length>32)return err('El nombre es demasiado largo.');$('reg').disabled=true;$('gerr').textContent='';try{const token=crypto.randomUUID()+crypto.randomUUID();const {data,error}=await db.rpc('register_wbc',{p_name:raw,p_token:token});if(error){if((error.message||'').toLowerCase().includes('duplicate')||(error.message||'').toLowerCase().includes('already'))return err('Ese nombre de WBC ya está registrado.');throw error;}localIdentity={id:data,token};localStorage.setItem('dl16_identity',JSON.stringify(localIdentity));await refreshIdentity();await sub();flash('REGISTRO EXITOSO');beep(760);show('app');go('as');}catch(e){console.error(e);err('No se pudo registrar: '+(e.message||'error de conexión'));}finally{$('reg').disabled=false;}}
-$('reg').onclick=register;$('wbc').onkeydown=e=>{if(e.key==='Enter')register();};
+function makeAccessKey(){const bytes=new Uint8Array(24);crypto.getRandomValues(bytes);return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();}
+let pendingAccessKey=null;
+async function register(){
+  const err=t=>{$('gerr').textContent=t;$('reg').disabled=false;};
+  const raw=$('wbc').value.trim().replace(/\s+/g,' ');
+  if(!raw)return err('Escribe tu nombre de usuario de WBC.');
+  if(raw.length<2)return err('El nombre es demasiado corto.');
+  if(raw.length>32)return err('El nombre es demasiado largo.');
+  if(!db)return err('La base de datos no está conectada.');
+  $('reg').disabled=true;$('gerr').textContent='';$('newkey').classList.add('hide');
+  try{
+    const token=makeAccessKey();
+    const {data,error}=await db.rpc('register_wbc',{p_name:raw,p_token:token});
+    if(error){
+      const msg=(error.message||'').toLowerCase();
+      if(msg.includes('duplicate')||msg.includes('already')||msg.includes('23505')||msg.includes('registrado'))
+        return err('Ese nombre de WBC ya está registrado. Si ya tienes una clave, inicia sesión abajo.');
+      throw error;
+    }
+    localIdentity={id:data,token};
+    localStorage.setItem('dl16_identity',JSON.stringify(localIdentity));
+    pendingAccessKey=token;
+    $('keyout').value=token;
+    $('newkey').classList.remove('hide');
+    $('gerr').textContent='Registro creado. Guarda tu clave antes de continuar.';
+  }catch(e){
+    console.error(e);err('No se pudo registrar: '+(e.message||'error de conexión'));
+  }finally{
+    $('reg').disabled=!$('newkey').classList.contains('hide');
+  }
+}
+async function loginWBC(){
+  const raw=$('loginwbc').value.trim().replace(/\s+/g,' ');
+  const token=$('loginkey').value.trim();
+  $('lerr').textContent='';
+  if(!raw||!token){$('lerr').textContent='Escribe tu nombre WBC y tu clave.';return;}
+  if(!db){$('lerr').textContent='La base de datos no está conectada.';return;}
+  $('login').disabled=true;
+  try{
+    const {data:user,error:findError}=await db.from('participants').select('id,name').eq('normalized_key',keyOf(raw)).maybeSingle();
+    if(findError)throw findError;
+    if(!user){$('lerr').textContent='No existe un registro con ese nombre WBC.';return;}
+    const {data,error}=await db.rpc('get_my_participant',{p_id:user.id,p_token:token});
+    if(error||!data){$('lerr').textContent='Clave incorrecta. Revisa el nombre y la clave.';return;}
+    localIdentity={id:user.id,token};
+    localStorage.setItem('dl16_identity',JSON.stringify(localIdentity));
+    await refreshIdentity();await sub();
+    $('loginkey').value='';
+    flash('SESIÓN INICIADA');beep(760);show('app');go('as');
+  }catch(e){
+    console.error(e);$('lerr').textContent='No se pudo iniciar sesión: '+(e.message||'error de conexión');
+  }finally{$('login').disabled=false;}
+}
+$('copykey').onclick=async()=>{try{await navigator.clipboard.writeText(pendingAccessKey||$('keyout').value);flash('Clave copiada');}catch(e){$('keyout').select();flash('Selecciona y copia la clave manualmente');}};
+$('continuekey').onclick=async()=>{
+  if(!pendingAccessKey)return;
+  pendingAccessKey=null;$('newkey').classList.add('hide');
+  $('keyout').value='';
+  await refreshIdentity();await sub();show('app');go('as');
+  flash('REGISTRO EXITOSO · CLAVE GUARDADA');
+};
+$('reg').onclick=register;
+$('login').onclick=loginWBC;
+$('loginkey').onkeydown=e=>{if(e.key==='Enter')loginWBC();};
+$('loginwbc').onkeydown=e=>{if(e.key==='Enter')$('loginkey').focus();};
 async function adminLogin(){if(!db)return flash('Base de datos no conectada');const email=prompt('Correo del administrador de DEADLORD OS:');if(!email)return;const password=prompt('Contraseña:');if(!password)return;const {data,error}=await db.auth.signInWithPassword({email,password});if(error){flash('Acceso denegado');return;}admin=data.user?.app_metadata?.role==='admin';if(!admin){await db.auth.signOut();flash('La cuenta no tiene rol de administrador.');return;}$('nav-admin').classList.remove('hide');$('admin-login').textContent='ADMIN ONLINE';flash('Acceso ROOT autorizado');}
 $('admin-login').onclick=()=>admin?go('ad'):adminLogin();
 function rAdmin(){if(!admin)return;const L=$('al');if(L!==document.activeElement&&L.contains(document.activeElement))return;L.textContent='';USERS.slice().sort(cmp).forEach(u=>{const r=document.createElement('div');r.className='row';const n=document.createElement('input');n.value=u.name;const s=document.createElement('select');Object.keys(ST).forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=ST[k][0];s.appendChild(o);});s.value=u.status||'none';const sv=btn('Guardar',async()=>{const nm=n.value.trim()||u.name;const {error}=await db.from('participants').update({name:nm,normalized_key:keyOf(nm),status:s.value}).eq('id',u.id);flash(error?'No se pudo guardar (nombre duplicado o permisos).':'Registro actualizado');});const del=btn('Eliminar',async function(){if(this.dataset.confirm){const {error}=await db.from('participants').delete().eq('id',u.id);flash(error?'No se pudo eliminar':'Eliminado');}else{this.dataset.confirm='1';this.textContent='¿Seguro?';setTimeout(()=>{delete this.dataset.confirm;this.textContent='Eliminar';},3000);}});r.append(n,s,sv,del);L.appendChild(r);});}
 $('sv').onclick=async()=>{const v=$('a-when').value;const {error}=await db.from('event_config').upsert({id:1,event_at:v?new Date(v).toISOString():null,message:$('a-msg').value.trim()});flash(error?'Sin permiso para guardar':'Configuración guardada');};
 $('pn').onclick=async()=>{const t=$('a-news').value.trim();if(!t)return;const {error}=await db.from('announcements').insert({text:t});if(error)flash('Sin permiso para publicar');else{$('a-news').value='';flash('Publicado');}};
 function download(name,data,type='application/json'){const blob=new Blob([data],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);}
-$('ex').onclick=()=>download('deadlord-backup.json',JSON.stringify({users:USERS,config:CFG,news:NEWS},null,2));$('exc').onclick=()=>download('deadlord-usuarios.csv','nombre,estado\n'+USERS.slice().sort(cmp).map(u=>'"'+String(u.name).replace(/"/g,'""')+'",'+(u.status||'none')).join('\n'),'text/csv');
+$('ex').onclick=()=>download('deadlord-backup.json',JSON.stringify({users:USERS,config:CFG,news:NEWS},null,2));
+$('clear-users').onclick=async()=>{
+  if(!admin)return flash('Acceso ROOT requerido');
+  if(!USERS.length)return flash('No hay registros WBC que reiniciar');
+  download('deadlord-backup-before-reset.json',JSON.stringify({users:USERS,config:CFG,news:NEWS},null,2));
+  const phrase=prompt('Se descargó una copia de seguridad. Para borrar TODOS los registros WBC y sus claves, escribe BORRAR WBC:');
+  if(phrase!=='BORRAR WBC')return flash('Reinicio cancelado');
+  const {error}=await db.from('participants').delete().not('id','is',null);
+  if(error){console.error(error);flash('No se pudo reiniciar. Revisa los permisos ROOT.');return;}
+  localIdentity=null;mine=null;
+  try{localStorage.removeItem('dl16_identity');}catch(e){}
+  await sub();await refreshIdentity();rMine();
+  flash('Registros WBC reiniciados. ROOT, evento y anuncios se conservaron.');
+};$('exc').onclick=()=>download('deadlord-usuarios.csv','nombre,estado\n'+USERS.slice().sort(cmp).map(u=>'"'+String(u.name).replace(/"/g,'""')+'",'+(u.status||'none')).join('\n'),'text/csv');
 $('rs').onchange=async e=>{const f=e.target.files[0];if(!f)return;let n=0;try{const j=JSON.parse(await f.text());for(const u of(j.users||[])){if(u&&u.name&&!USERS.some(x=>x.id===u.id)){const {error}=await db.from('participants').insert({name:u.name,normalized_key:keyOf(u.name),status:ST[u.status]?u.status:'none'});if(!error)n++;}}flash('Restaurados: '+n+' · solo registros nuevos');await sub();}catch(x){flash('Archivo no válido');}e.target.value='';};
 $('song').addEventListener('play',()=>log('ok','Reproduciendo: El siguiente ciclo'));
 const song=$('song'),mini=$('mini'),mc=$('mc'),cx=mc.getContext('2d'),RM=matchMedia('(prefers-reduced-motion:reduce)').matches;let an=null,mphase='off',raf=0,mt0=0;
